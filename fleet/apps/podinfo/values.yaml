@@ -1,4 +1,5 @@
-# The release: change image.tag here and the fleet rolls it out dev -> prod, one prod cluster at a time.
+# The release: change image.tag here and merge; dev clusters get it. scripts/promote.sh then moves it to
+# prod (only if dev is healthy on it), one prod cluster at a time.
 image:
   repository: ghcr.io/stefanprodan/podinfo
   tag: 6.7.0

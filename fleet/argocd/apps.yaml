@@ -1,8 +1,13 @@
-# Team app on every managed cluster, rolled out in waves with ApplicationSet progressive sync:
-#   step 1: env=dev        all dev clusters
-#   step 2: env=prod       one cluster at a time (maxUpdate: 1)
-# A step starts only when every Application in the previous step is Healthy, so a release that
-# doesn't come up on dev never reaches prod. The version lives in fleet/apps/podinfo/values.yaml.
+# Team app on every managed cluster. Two mechanisms, one per job:
+#   - between environments: git. Dev clusters follow `main`; prod clusters follow the `prod`
+#     branch, which only scripts/promote.sh moves, and only to a commit that has been Synced and
+#     Healthy on every dev cluster for a soak period. A release that doesn't come up on dev is
+#     never promoted.
+#   - within prod: ApplicationSet progressive sync (RollingSync, maxUpdate: 1) updates one prod
+#     cluster at a time and waits for it to be Healthy before the next.
+# RollingSync alone can't order dev before prod reliably: it decides from each app's last seen
+# state, so prod can be synced first if Argo CD notices the new commit there before it does on
+# dev (argoproj/argo-cd#22852). docs/design.md has the details.
 apiVersion: argoproj.io/v1alpha1
 kind: ApplicationSet
 metadata:
@@ -39,7 +44,7 @@ spec:
             parameters:
               - { name: ui.message, value: 'podinfo on {{ .name }} ({{ index .metadata.labels "region" }})' }
         - repoURL: http://fleet-git:3000/fleet/fleet.git
-          targetRevision: main
+          targetRevision: '{{ if eq (index .metadata.labels "env") "prod" }}prod{{ else }}main{{ end }}'
           ref: fleet
       destination: { server: '{{ .server }}', namespace: podinfo }
       syncPolicy:

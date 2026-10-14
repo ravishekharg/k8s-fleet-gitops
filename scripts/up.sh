@@ -37,6 +37,9 @@ docker exec -u git fleet-git gitea admin user create --username fleet --password
 curl -s -u "$GIT_AUTH" -X POST -H 'Content-Type: application/json' "http://localhost:$GIT_PORT/api/v1/user/repos" \
   -d '{"name":"fleet","private":false,"default_branch":"main"}' -o /dev/null
 bash scripts/push-fleet.sh "initial fleet definition"
+# prod clusters follow the `prod` branch; it starts at the initial commit and from then on only
+# scripts/promote.sh moves it
+curl -s -u "$GIT_AUTH" -X POST -H 'Content-Type: application/json' "http://localhost:$GIT_PORT/api/v1/repos/fleet/fleet/branches"   -d '{"new_branch_name":"prod","old_branch_name":"main"}' -o /dev/null
 
 log "Argo CD on the hub (progressive syncs on, 15 s reconciliation for the demo)"
 helm repo add argo https://argoproj.github.io/argo-helm >/dev/null 2>&1 || true

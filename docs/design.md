@@ -33,26 +33,37 @@ change reaches prod; prod rejects them at admission. System namespaces are exclu
 policies are unit-tested offline with the Kyverno CLI (`tests/policies`) and enforced live in
 `fleet-test.sh`.
 
-## Rollout waves (ApplicationSet progressive sync)
-`strategy: RollingSync` on the app ApplicationSet:
-1. all `env=dev` clusters, then
-2. `env=prod` clusters, `maxUpdate: 1`: one at a time.
+## Releases: promotion between environments, waves within prod
+Two mechanisms, each doing the job it can do reliably:
 
-A step starts only when every Application in the previous one is Healthy. A release whose pods
-can't start (bad tag, crash on boot) stays Progressing/Degraded on dev and never reaches prod;
-reverting the commit recovers dev. Progressive sync is still behind a feature flag in Argo CD
-(`applicationsetcontroller.enable.progressive.syncs`), and with it on, the ApplicationSet
-controller (not the Application's own automated policy) triggers the app syncs.
+1. **Dev → prod is a git promotion.** Dev clusters' app source follows `main`; prod clusters'
+   follows a `prod` branch (one Go-template line in the ApplicationSet picks the branch from the
+   cluster's `env` label). Merging a release to `main` reaches dev only. `scripts/promote.sh`
+   fast-forwards `prod` to that commit, and only after every dev Application is Synced to
+   exactly that commit and Healthy, continuously for a soak period (30 s here). A release whose
+   pods can't start never passes the gate; reverting the commit on `main` recovers dev.
+2. **Inside prod, ApplicationSet progressive sync** (`RollingSync`, step `env=prod`,
+   `maxUpdate: 1`) updates one prod cluster at a time and waits for it to be Healthy before the
+   next.
 
-A sync always takes the newest commit on `main`; a wave doesn't pin the revision it started with.
-If a second release is merged while the first wave is still in its prod step, the clusters not yet
-updated skip straight to the second release without it ever passing dev (the first CI run here
-did exactly that). So release one at a time: merge the next only after the ApplicationSet status
-shows every app Healthy at the current commit, which is what `fleet-test.sh` waits for.
+**Why not RollingSync for dev → prod as well?** It was the first design, and CI showed it
+doesn't hold. RollingSync decides "step 1 is done" from each Application's last seen state. When
+a commit lands, Argo CD refreshes apps in no particular order; if a prod app is seen OutOfSync
+while dev still shows the old revision as Synced/Healthy, the controller thinks step 1 is complete
+and syncs prod first. One run recorded prod-us synced 22 s *before* dev. It's a known upstream
+issue (argoproj/argo-cd#22852), closed as not easily fixable. Ordering within a single step is
+unaffected, so RollingSync stays for what it does well. Progressive sync is still behind a
+feature flag (`applicationsetcontroller.enable.progressive.syncs`); with it on, the ApplicationSet
+controller, not the Application's automated policy, triggers the syncs.
 
-What "Healthy" can't catch: a release that starts fine but is wrong (errors, latency). That
-needs analysis on metrics between waves: Argo Rollouts with an AnalysisTemplate inside each
-cluster, or a soak time plus an SLO check before the next wave.
+**A sync takes the branch head, not the commit a rollout started with.** That's why prod follows
+a branch only the gate moves: nothing merged to `main` can slip into prod in the middle of a prod
+rollout.
+
+What "Healthy" can't catch: a release that starts fine but is wrong (errors, latency). The gate
+is the place for that: query the SLOs (error rate, p99 latency) over the soak window before
+moving `prod`, or run Argo Rollouts with an AnalysisTemplate inside each cluster. In a real
+setup the gate runs as a pipeline job (or Kargo) instead of a script.
 
 ## Drift
 Platform Applications have `selfHeal: true`: Argo CD watches the live objects, and a manual
