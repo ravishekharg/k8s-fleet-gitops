@@ -32,9 +32,21 @@ image_on() { on "$1" -n podinfo get deploy podinfo -o jsonpath='{.spec.template.
 rolled_out() {  # rolled_out <cluster> <tag>: the deployment runs <tag> on all replicas, rollout complete
   [ "$(image_on "$1")" = "ghcr.io/stefanprodan/podinfo:$2" ] && on "$1" -n podinfo rollout status deploy/podinfo --timeout=1s
 }
-set_tag() {  # commit a new image tag (what merging a release PR does)
+set_tag() {  # commit a new image tag (what merging a release PR does); REV = the commit
   sed -i "s/^  tag: .*/  tag: $1/" fleet/apps/podinfo/values.yaml
-  bash scripts/push-fleet.sh "podinfo $1" >/dev/null
+  REV=$(bash scripts/push-fleet.sh "podinfo $1" | awk '/^   pushed: / { print $2 }')
+}
+appset_status() {  # appset_status <jq filter>: over the podinfo ApplicationSet's progressive sync status
+  hub -n argocd get applicationset podinfo -o json | jq -r --arg rev "$REV" "$1"
+}
+wave_done() {  # the ApplicationSet controller reports all three podinfo apps Healthy at commit REV
+  [ "$(appset_status '[.status.applicationStatus[] | select(.status == "Healthy" and any(.targetRevisions[]; startswith($rev)))] | length')" = 3 ]
+}
+healthy_at() {  # healthy_at <cluster>: when the controller marked it Healthy (epoch s)
+  date -d "$(appset_status ".status.applicationStatus[] | select(.application == \"podinfo-$1\") | .lastTransitionTime")" +%s
+}
+synced_at() {  # synced_at <cluster> <tag>: when the sync created the ReplicaSet for <tag> (epoch s)
+  date -d "$(on "$1" -n podinfo get rs -o json | jq -r --arg img "ghcr.io/stefanprodan/podinfo:$2"     '[.items[] | select(.spec.template.spec.containers[0].image == $img) | .metadata.creationTimestamp] | min')" +%s
 }
 
 echo "== 1. bootstrap"
@@ -80,30 +92,28 @@ out=$(violator prod-us)
 echo "$out" | grep -q "disallow-latest-tag" && pass "prod-us enforces fleet policy" || { fail "prod-us does not enforce: $out"; on prod-us -n podinfo delete pod policy-probe --ignore-not-found >/dev/null; }
 
 echo "== 5. waves: release 6.7.1"
-set_tag 6.7.1
-declare -A done_at=()  # "=()": a bare declare is still unset under set -u
+# Order is judged from timestamps the clusters record, not from polling: when each cluster's sync
+# created the new ReplicaSet, and when the controller saw each app Healthy (all kind nodes share a clock).
 start=$(ts)
-while [ ${#done_at[@]} -lt 3 ] && [ $(( $(ts) - start )) -lt 900 ]; do
-  for c in dev prod-eu prod-us; do
-    [ -z "${done_at[$c]:-}" ] && rolled_out "$c" 6.7.1 >/dev/null 2>&1 && done_at[$c]=$(( $(ts) - start )) && echo "   ${done_at[$c]}s  $c on 6.7.1"
-  done
-  sleep 3
-done
-if [ ${#done_at[@]} -eq 3 ]; then
-  first_prod=$(( done_at[prod-eu] < done_at[prod-us] ? done_at[prod-eu] : done_at[prod-us] ))
-  last_prod=$(( done_at[prod-eu] > done_at[prod-us] ? done_at[prod-eu] : done_at[prod-us] ))
-  if [ "${done_at[dev]}" -lt "$first_prod" ] && [ $(( last_prod - first_prod )) -ge 6 ]; then
-    pass "dev (${done_at[dev]}s) before prod, prod clusters one after the other (${first_prod}s, ${last_prod}s)"
-  else fail "wave order wrong: dev ${done_at[dev]}s, prod ${first_prod}s / ${last_prod}s"; fi
-else fail "release did not reach all clusters in 15 min (${!done_at[*]})"; fi
+set_tag 6.7.1
+if t=$(wait_until 900 wave_done); then
+  declare -A synced=() healthy=()
+  for c in dev prod-eu prod-us; do synced[$c]=$(( $(synced_at "$c" 6.7.1) - start )); healthy[$c]=$(( $(healthy_at "$c") - start )); done
+  if [ "${synced[prod-eu]}" -le "${synced[prod-us]}" ]; then p1=prod-eu p2=prod-us; else p1=prod-us p2=prod-eu; fi
+  echo "   dev: synced ${synced[dev]}s, Healthy ${healthy[dev]}s / $p1: ${synced[$p1]}s, ${healthy[$p1]}s / $p2: ${synced[$p2]}s, ${healthy[$p2]}s"
+  if [ "${healthy[dev]}" -le "${synced[$p1]}" ] && [ "${healthy[$p1]}" -le "${synced[$p2]}" ]; then
+    pass "wave finished in ${t}s: prod started only after dev was Healthy, and $p2 only after $p1 was Healthy"
+  else fail "wave order wrong (times above)"; fi
+else fail "release wave not finished after 15 min: $(appset_status '[.status.applicationStatus[] | "\(.application)=\(.status)"] | join(" ")')"; fi
 
 echo "== 6. halt: release 6.7.1-broken (tag doesn't exist)"
 set_tag 6.7.1-broken
 if t=$(wait_until 300 sh -c "kubectl --context kind-fleet-dev -n podinfo get deploy podinfo -o jsonpath='{.spec.template.spec.containers[0].image}' | grep -q broken"); then
   echo "   ${t}s  dev got the broken release (old pod keeps serving: maxUnavailable 0 at 1 replica)"
   sleep 150
+  waiting=$(appset_status '[.status.applicationStatus[] | select(.status == "Waiting") | .application] | join(" ")')
   if [ "$(image_on prod-eu)" = "ghcr.io/stefanprodan/podinfo:6.7.1" ] && [ "$(image_on prod-us)" = "ghcr.io/stefanprodan/podinfo:6.7.1" ]; then
-    pass "150 s later prod-eu and prod-us still run 6.7.1: the wave stopped at dev ($(hub -n argocd get application podinfo-dev -o jsonpath='{.status.health.status}') there)"
+    pass "150 s later prod-eu and prod-us still run 6.7.1: the wave stopped at dev ($(hub -n argocd get application podinfo-dev -o jsonpath='{.status.health.status}') there; Waiting: $waiting)"
   else fail "broken release reached prod: $(image_on prod-eu), $(image_on prod-us)"; fi
 else fail "dev never received the broken release"; fi
 set_tag 6.7.1

@@ -44,6 +44,12 @@ reverting the commit recovers dev. Progressive sync is still behind a feature fl
 (`applicationsetcontroller.enable.progressive.syncs`), and with it on, the ApplicationSet
 controller (not the Application's own automated policy) triggers the app syncs.
 
+A sync always takes the newest commit on `main`; a wave doesn't pin the revision it started with.
+If a second release is merged while the first wave is still in its prod step, the clusters not yet
+updated skip straight to the second release without it ever passing dev (the first CI run here
+did exactly that). So release one at a time: merge the next only after the ApplicationSet status
+shows every app Healthy at the current commit, which is what `fleet-test.sh` waits for.
+
 What "Healthy" can't catch: a release that starts fine but is wrong (errors, latency). That
 needs analysis on metrics between waves: Argo Rollouts with an AnalysisTemplate inside each
 cluster, or a soak time plus an SLO check before the next wave.
