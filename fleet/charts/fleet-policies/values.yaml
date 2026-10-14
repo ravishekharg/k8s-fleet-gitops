@@ -1,0 +1,5 @@
+# Audit: violations are allowed and recorded in PolicyReports. Enforce: rejected at admission.
+# values-prod.yaml switches prod clusters to Enforce; dev stays in Audit so teams see what
+# would break before it reaches prod.
+failureAction: Audit
+excludedNamespaces: [kube-system, kube-public, kube-node-lease, kyverno, local-path-storage, argocd]

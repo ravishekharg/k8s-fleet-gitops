@@ -1,0 +1,18 @@
+# The only thing applied by hand: an app-of-apps that makes Argo CD manage fleet/argocd/
+# (projects and ApplicationSets). Everything after this is a git commit.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: fleet-root
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: http://fleet-git:3000/fleet/fleet.git
+    targetRevision: main
+    path: fleet/argocd
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }

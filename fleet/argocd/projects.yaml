@@ -1,0 +1,26 @@
+# Platform add-ons may install cluster-scoped things (CRDs, ClusterPolicies, webhooks); team
+# apps may only create namespaced resources, and only in their own namespaces.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: platform
+  namespace: argocd
+spec:
+  description: Fleet-wide add-ons and governance, owned by the platform team
+  sourceRepos: ["http://fleet-git:3000/fleet/fleet.git", "https://kyverno.github.io/kyverno/"]
+  destinations: [{ server: "*", namespace: "*" }]
+  clusterResourceWhitelist: [{ group: "*", kind: "*" }]
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: apps
+  namespace: argocd
+spec:
+  description: Team applications
+  sourceRepos: ["http://fleet-git:3000/fleet/fleet.git", "https://stefanprodan.github.io/podinfo"]
+  destinations: [{ server: "*", namespace: "podinfo" }]
+  clusterResourceWhitelist: [{ group: "", kind: Namespace }]
+  namespaceResourceBlacklist:
+    - { group: "", kind: ResourceQuota }      # quotas belong to the platform baseline, not the team
+    - { group: networking.k8s.io, kind: NetworkPolicy }

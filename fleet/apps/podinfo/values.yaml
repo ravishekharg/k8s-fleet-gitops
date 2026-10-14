@@ -1,0 +1,8 @@
+# The release: change image.tag here and the fleet rolls it out dev -> prod, one prod cluster at a time.
+image:
+  repository: ghcr.io/stefanprodan/podinfo
+  tag: 6.7.0
+replicaCount: 2
+resources:
+  requests: { cpu: 10m, memory: 32Mi }
+  limits: { memory: 64Mi }

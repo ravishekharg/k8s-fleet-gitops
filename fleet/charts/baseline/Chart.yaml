@@ -1,0 +1,4 @@
+apiVersion: v2
+name: baseline
+description: What every cluster gets before any team does - namespaces, default-deny networking, quotas, identity
+version: 0.1.0

@@ -1,0 +1,45 @@
+# Cluster identity, readable by anything in the cluster.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fleet-identity
+  namespace: kube-public
+data:
+  cluster: {{ .Values.cluster | quote }}
+  env: {{ .Values.env | quote }}
+  region: {{ .Values.region | quote }}
+{{- range .Values.teamNamespaces }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .name }}
+  labels:
+    fleet/env: {{ $.Values.env | quote }}
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: team-quota
+  namespace: {{ .name }}
+spec:
+  hard:
+    requests.cpu: {{ .quota.cpu | quote }}
+    requests.memory: {{ .quota.memory | quote }}
+    pods: {{ .quota.pods | quote }}
+---
+# Nothing gets in unless a team policy allows it; pods in the namespace may talk to each other.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: {{ .name }}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: {}
+{{- end }}

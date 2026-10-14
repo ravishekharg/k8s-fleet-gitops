@@ -1,0 +1,101 @@
+{{- define "fleet.match" -}}
+match:
+  any:
+    - resources:
+        kinds: [Pod]
+exclude:
+  any:
+    - resources:
+        namespaces: {{ toJson .Values.excludedNamespaces }}
+{{- end }}
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-privileged
+  annotations:
+    policies.kyverno.io/description: Privileged containers can do anything the node can.
+spec:
+  background: true
+  rules:
+    - name: no-privileged
+      {{- include "fleet.match" . | nindent 6 }}
+      validate:
+        failureAction: {{ .Values.failureAction }}
+        message: "Privileged containers are not allowed."
+        pattern:
+          spec:
+            =(initContainers):
+              - =(securityContext):
+                  =(privileged): "false"
+            containers:
+              - =(securityContext):
+                  =(privileged): "false"
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-latest-tag
+  annotations:
+    policies.kyverno.io/description: A mutable tag means two clusters can run different code under one name.
+spec:
+  background: true
+  rules:
+    - name: pinned-tag
+      {{- include "fleet.match" . | nindent 6 }}
+      validate:
+        failureAction: {{ .Values.failureAction }}
+        message: "Images must use a pinned tag or digest, not :latest or no tag."
+        pattern:
+          spec:
+            containers:
+              - image: "*:* | *@sha256:*"
+    - name: not-latest
+      {{- include "fleet.match" . | nindent 6 }}
+      validate:
+        failureAction: {{ .Values.failureAction }}
+        message: "The :latest tag is not allowed."
+        pattern:
+          spec:
+            containers:
+              - image: "!*:latest"
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-requests-limits
+  annotations:
+    policies.kyverno.io/description: Without requests the scheduler can't place pods safely; without a memory limit one pod can starve a node.
+spec:
+  background: true
+  rules:
+    - name: requests-and-memory-limit
+      {{- include "fleet.match" . | nindent 6 }}
+      validate:
+        failureAction: {{ .Values.failureAction }}
+        message: "CPU and memory requests and a memory limit are required."
+        pattern:
+          spec:
+            containers:
+              - resources:
+                  requests:
+                    cpu: "?*"
+                    memory: "?*"
+                  limits:
+                    memory: "?*"
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-host-path
+spec:
+  background: true
+  rules:
+    - name: no-host-path
+      {{- include "fleet.match" . | nindent 6 }}
+      validate:
+        failureAction: {{ .Values.failureAction }}
+        message: "hostPath volumes are not allowed."
+        pattern:
+          spec:
+            =(volumes):
+              - X(hostPath): "null"

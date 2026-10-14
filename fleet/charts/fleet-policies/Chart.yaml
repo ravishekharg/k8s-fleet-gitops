@@ -1,0 +1,4 @@
+apiVersion: v2
+name: fleet-policies
+description: Governance rules applied to every cluster in the fleet (Kyverno)
+version: 0.1.0

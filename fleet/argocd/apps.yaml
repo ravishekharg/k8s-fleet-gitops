@@ -1,0 +1,47 @@
+# Team app on every managed cluster, rolled out in waves with ApplicationSet progressive sync:
+#   step 1: env=dev        all dev clusters
+#   step 2: env=prod       one cluster at a time (maxUpdate: 1)
+# A step starts only when every Application in the previous step is Healthy, so a release that
+# doesn't come up on dev never reaches prod. The version lives in fleet/apps/podinfo/values.yaml.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: podinfo
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - clusters:
+        selector:
+          matchLabels: { fleet/managed: "true" }
+  strategy:
+    type: RollingSync
+    rollingSync:
+      steps:
+        - matchExpressions: [{ key: env, operator: In, values: [dev] }]
+        - matchExpressions: [{ key: env, operator: In, values: [prod] }]
+          maxUpdate: 1
+  template:
+    metadata:
+      name: 'podinfo-{{ .name }}'
+      labels: { layer: apps, env: '{{ index .metadata.labels "env" }}' }
+    spec:
+      project: apps
+      sources:
+        - repoURL: https://stefanprodan.github.io/podinfo
+          chart: podinfo
+          targetRevision: 6.7.1
+          helm:
+            releaseName: podinfo
+            valueFiles: ['$fleet/fleet/apps/podinfo/values.yaml', '$fleet/fleet/apps/podinfo/values-{{ index .metadata.labels "env" }}.yaml']
+            ignoreMissingValueFiles: true
+            parameters:
+              - { name: ui.message, value: 'podinfo on {{ .name }} ({{ index .metadata.labels "region" }})' }
+        - repoURL: http://fleet-git:3000/fleet/fleet.git
+          targetRevision: main
+          ref: fleet
+      destination: { server: '{{ .server }}', namespace: podinfo }
+      syncPolicy:
+        syncOptions: [CreateNamespace=true]
+        retry: { limit: 3, backoff: { duration: 10s, factor: 2, maxDuration: 1m } }

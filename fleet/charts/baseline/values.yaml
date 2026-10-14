@@ -1,0 +1,6 @@
+cluster: unknown
+env: unknown
+region: unknown
+teamNamespaces:
+  - name: podinfo
+    quota: { cpu: "2", memory: 2Gi, pods: "20" }

@@ -1,0 +1,101 @@
+# Platform layer, on every cluster labelled fleet/managed=true:
+#   kyverno        the policy engine
+#   fleet-policies governance rules; Enforce where env=prod, Audit elsewhere (values-<env>.yaml)
+#   baseline       namespaces with default-deny networking and quotas
+# Registering a cluster with the label is the whole onboarding.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: kyverno
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - clusters:
+        selector:
+          matchLabels: { fleet/managed: "true" }
+  template:
+    metadata:
+      name: 'kyverno-{{ .name }}'
+      labels: { layer: platform, env: '{{ index .metadata.labels "env" }}' }
+    spec:
+      project: platform
+      source:
+        repoURL: https://kyverno.github.io/kyverno/
+        chart: kyverno
+        targetRevision: 3.3.4
+        helm:
+          releaseName: kyverno
+          valuesObject:
+            admissionController: { replicas: 1 }
+            backgroundController: { enabled: false }
+            cleanupController: { enabled: false }
+            reportsController: { enabled: true }
+      destination: { server: '{{ .server }}', namespace: kyverno }
+      syncPolicy:
+        automated: { prune: true, selfHeal: true }
+        syncOptions: [CreateNamespace=true, ServerSideApply=true]
+        retry: { limit: 10, backoff: { duration: 10s, factor: 2, maxDuration: 2m } }
+---
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: fleet-policies
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - clusters:
+        selector:
+          matchLabels: { fleet/managed: "true" }
+  template:
+    metadata:
+      name: 'policies-{{ .name }}'
+      labels: { layer: platform, env: '{{ index .metadata.labels "env" }}' }
+    spec:
+      project: platform
+      source:
+        repoURL: http://fleet-git:3000/fleet/fleet.git
+        targetRevision: main
+        path: fleet/charts/fleet-policies
+        helm:
+          valueFiles: ['values-{{ index .metadata.labels "env" }}.yaml']
+          ignoreMissingValueFiles: true
+      destination: { server: '{{ .server }}', namespace: kyverno }
+      syncPolicy:
+        automated: { prune: true, selfHeal: true }
+        syncOptions: [SkipDryRunOnMissingResource=true]   # ClusterPolicy CRD arrives with kyverno
+        retry: { limit: 10, backoff: { duration: 10s, factor: 2, maxDuration: 2m } }
+---
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: baseline
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - clusters:
+        selector:
+          matchLabels: { fleet/managed: "true" }
+  template:
+    metadata:
+      name: 'baseline-{{ .name }}'
+      labels: { layer: platform, env: '{{ index .metadata.labels "env" }}' }
+    spec:
+      project: platform
+      source:
+        repoURL: http://fleet-git:3000/fleet/fleet.git
+        targetRevision: main
+        path: fleet/charts/baseline
+        helm:
+          values: |
+            cluster: {{ .name }}
+            env: {{ index .metadata.labels "env" }}
+            region: {{ index .metadata.labels "region" }}
+      destination: { server: '{{ .server }}', namespace: default }
+      syncPolicy:
+        automated: { prune: true, selfHeal: true }   # selfHeal: hand edits on a cluster are reverted
