@@ -38,5 +38,8 @@ jobs:
         if: failure()
         run: |
           export KUBECONFIG=/tmp/kubeconfig-fleet
+          kubectl --context kind-fleet-hub get pods -A -o wide || true
+          kubectl --context kind-fleet-hub -n argocd get events --sort-by=.lastTimestamp | tail -40 || true
+          kubectl --context kind-fleet-hub -n argocd describe pods | grep -E "^Name:|Image:|State:|Reason:|Message:" | head -80 || true
           kubectl --context kind-fleet-hub -n argocd get applications -o wide || true
           kubectl --context kind-fleet-hub -n argocd logs deploy/argocd-applicationset-controller --tail=100 || true
