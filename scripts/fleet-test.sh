@@ -47,12 +47,13 @@ if [ -z "$(hub -n argocd get applications -o name | grep prod-us)" ]; then pass 
 else fail "prod-us got applications without being labelled"; fi
 
 echo "== 2. governance"
-violator() {  # a pod Pod Security 'baseline' allows but fleet policy forbids: :latest, no requests/limits
+violator() {  # a pod Pod Security 'baseline' allows but fleet policy forbids: :latest, no memory limit
+  # (it has requests: without them the namespace ResourceQuota rejects it before Audit can report it)
   cat <<EOF | on "$1" apply -f - 2>&1
 apiVersion: v1
 kind: Pod
 metadata: { name: policy-probe, namespace: podinfo }
-spec: { containers: [{ name: c, image: "nginx:latest" }] }
+spec: { containers: [{ name: c, image: "nginx:latest", resources: { requests: { cpu: 10m, memory: 16Mi } } }] }
 EOF
 }
 out=$(violator prod-eu)
@@ -80,7 +81,7 @@ echo "$out" | grep -q "disallow-latest-tag" && pass "prod-us enforces fleet poli
 
 echo "== 5. waves: release 6.7.1"
 set_tag 6.7.1
-declare -A done_at
+declare -A done_at=()  # "=()": a bare declare is still unset under set -u
 start=$(ts)
 while [ ${#done_at[@]} -lt 3 ] && [ $(( $(ts) - start )) -lt 900 ]; do
   for c in dev prod-eu prod-us; do
