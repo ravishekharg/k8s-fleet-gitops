@@ -38,8 +38,17 @@ curl -s -u "$GIT_AUTH" -X POST -H 'Content-Type: application/json' "http://local
   -d '{"name":"fleet","private":false,"default_branch":"main"}' -o /dev/null
 bash scripts/push-fleet.sh "initial fleet definition"
 # prod clusters follow the `prod` branch; it starts at the initial commit and from then on only
-# scripts/promote.sh moves it
-curl -s -u "$GIT_AUTH" -X POST -H 'Content-Type: application/json' "http://localhost:$GIT_PORT/api/v1/repos/fleet/fleet/branches"   -d '{"new_branch_name":"prod","old_branch_name":"main"}' -o /dev/null
+# scripts/promote.sh moves it. Created with git itself and checked: a silenced API call here once
+# failed unnoticed and left prod with nothing to deploy.
+repo_url="http://$GIT_AUTH@localhost:$GIT_PORT/fleet/fleet.git"
+if ! git ls-remote --exit-code --heads "$repo_url" prod >/dev/null 2>&1; then
+  work=$(mktemp -d)
+  git clone -q "$repo_url" "$work" 2>/dev/null
+  git -C "$work" push -q origin HEAD:refs/heads/prod 2>&1 | sed "s/${GIT_AUTH#*:}/***/g"
+  rm -rf "$work"
+fi
+git ls-remote --exit-code --heads "$repo_url" prod >/dev/null || { echo "prod branch missing on the git server" >&2; exit 1; }
+echo "   prod branch at $(git ls-remote --heads "$repo_url" prod | cut -c1-7)"
 
 log "Argo CD on the hub (progressive syncs on, 15 s reconciliation for the demo)"
 helm repo add argo https://argoproj.github.io/argo-helm >/dev/null 2>&1 || true
