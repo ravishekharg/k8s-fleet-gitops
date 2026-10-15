@@ -68,9 +68,22 @@ metadata: { name: policy-probe, namespace: podinfo }
 spec: { containers: [{ name: c, image: "nginx:latest", resources: { requests: { cpu: 10m, memory: 16Mi } } }] }
 EOF
 }
-out=$(violator prod-eu)
+# Enforcement is checked with a server-side dry run: the API server runs every admission webhook
+# (Kyverno included) but creates nothing, so a retry never trips over a pod an earlier attempt
+# created before the policies were active (deleting it takes ~30 s, which once ate the whole window).
+probe() {
+  cat <<EOF | on "$1" create --dry-run=server -o name -f - >/tmp/fleet-probe.out 2>&1
+apiVersion: v1
+kind: Pod
+metadata: { name: policy-probe, namespace: podinfo }
+spec: { containers: [{ name: c, image: "nginx:latest", resources: { requests: { cpu: 10m, memory: 16Mi } } }] }
+EOF
+  cat /tmp/fleet-probe.out
+}
+enforces() { probe "$1" | grep -q "disallow-latest-tag"; }  # policies can lag "Healthy" by a few seconds
+out=$(probe prod-eu)
 if echo "$out" | grep -q "disallow-latest-tag"; then pass "prod-eu rejected the pod: $(echo "$out" | grep -oE 'disallow-latest-tag[^.]*' | head -1 | cut -c1-90)"
-else fail "prod-eu admitted a :latest pod with no limits: $out"; on prod-eu -n podinfo delete pod policy-probe --ignore-not-found >/dev/null; fi
+else fail "prod-eu admitted a :latest pod with no limits: $out"; fi
 out=$(violator dev)
 if echo "$out" | grep -q "created"; then
   if t=$(wait_until 180 sh -c "kubectl --context kind-fleet-dev -n podinfo get policyreports -o json | grep -q '\"policy\": \"disallow-latest-tag\"'"); then
@@ -88,12 +101,11 @@ echo "== 4. onboarding"
 hub -n argocd label secret cluster-prod-us fleet/managed=true --overwrite >/dev/null
 if t=$(wait_until 900 cluster_ok prod-us); then pass "prod-us labelled fleet/managed=true: fully compliant in ${t}s, nothing else done"
 else fail "prod-us not compliant 15 min after labelling"; fi
-enforces() {  # the probe pod is rejected by fleet policy (policies can lag "Healthy" by a few seconds)
-  violator "$1" | grep -q "disallow-latest-tag" && return 0
-  on "$1" -n podinfo delete pod policy-probe --ignore-not-found --wait=false >/dev/null; return 1
-}
 if t=$(wait_until 90 enforces prod-us); then pass "prod-us enforces fleet policy (${t}s after it reported compliant)"
-else fail "prod-us does not enforce fleet policy 90 s after reporting compliant"; fi
+else
+  fail "prod-us does not enforce fleet policy 90 s after reporting compliant; last answer: $(cat /tmp/fleet-probe.out)"
+  on prod-us get clusterpolicies 2>&1 | head; on prod-us -n kyverno get pods 2>&1 | head
+fi
 
 echo "== 5. release 6.7.1: dev from main, prod only through the promotion gate"
 set_tag 6.7.1
