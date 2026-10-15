@@ -44,11 +44,38 @@ curl -s -u "$GIT_AUTH" -X POST -H 'Content-Type: application/json' "http://local
 log "Argo CD on the hub (progressive syncs on, 15 s reconciliation for the demo)"
 helm repo add argo https://argoproj.github.io/argo-helm >/dev/null 2>&1 || true
 helm repo update argo >/dev/null
+ARGO_VALUES=(
+  --version "$ARGOCD_CHART"
+  --set 'configs.params.applicationsetcontroller\.enable\.progressive\.syncs=true'
+  --set 'configs.cm.timeout\.reconciliation=15s'
+  --set dex.enabled=false --set notifications.enabled=false
+)
+
+# Pull every image the chart uses on the host, with retries, and load it into the hub node, so the
+# install never pulls inside the cluster. Public registries rate-limit anonymous pulls: two CI runs
+# timed out because the Redis image (ecr-public.aws.com/docker/library/redis) answered 429, and a
+# pod in ImagePullBackOff only retries every few minutes. Docker Hub is the fallback for images
+# that ECR Public mirrors from it.
+pull() {
+  local img=$1 alt=""
+  case $img in */docker/library/*) alt="docker.io/library/${img##*/docker/library/}" ;; esac
+  for attempt in 1 2 3 4 5; do
+    docker pull -q "$img" >/dev/null 2>&1 && return 0
+    if [ -n "$alt" ] && docker pull -q "$alt" >/dev/null 2>&1; then docker tag "$alt" "$img"; return 0; fi
+    echo "   pull $img failed (attempt $attempt/5), retrying" >&2
+    sleep $((attempt * 10))
+  done
+  return 1
+}
+images=$(helm template argocd argo/argo-cd "${ARGO_VALUES[@]}" | sed -nE 's/^[[:space:]]*image:[[:space:]]*"?([^"[:space:]]+)"?.*/\1/p' | sort -u)
+for img in $images; do
+  pull "$img" || { echo "could not pull $img" >&2; exit 1; }
+  kind load docker-image "$img" --name fleet-hub >/dev/null
+  echo "   preloaded $img"
+done
+
 helm upgrade --install argocd argo/argo-cd --kube-context kind-fleet-hub -n argocd --create-namespace \
-  --version "$ARGOCD_CHART" \
-  --set 'configs.params.applicationsetcontroller\.enable\.progressive\.syncs=true' \
-  --set 'configs.cm.timeout\.reconciliation=15s' \
-  --set dex.enabled=false --set notifications.enabled=false \
+  "${ARGO_VALUES[@]}" \
   --wait --timeout 600s 2>&1 >/dev/null | { grep -v 'unrecognized format' || true; } >&2
 
 log "register spokes"
