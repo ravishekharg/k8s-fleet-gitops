@@ -65,12 +65,15 @@ ARGO_VALUES=(
 # timed out because the Redis image (ecr-public.aws.com/docker/library/redis) answered 429, and a
 # pod in ImagePullBackOff only retries every few minutes. Docker Hub is the fallback for images
 # that ECR Public mirrors from it.
+# One platform only, loaded as an archive: `kind load docker-image` imports with --all-platforms, which fails on
+# newer Docker (containerd image store) for multi-arch images whose other platforms were never pulled.
+PLATFORM=${PLATFORM:-linux/$(docker version -f '{{.Server.Arch}}')}
 pull() {
   local img=$1 alt=""
   case $img in */docker/library/*) alt="docker.io/library/${img##*/docker/library/}" ;; esac
   for attempt in 1 2 3 4 5; do
-    docker pull -q "$img" >/dev/null 2>&1 && return 0
-    if [ -n "$alt" ] && docker pull -q "$alt" >/dev/null 2>&1; then docker tag "$alt" "$img"; return 0; fi
+    docker pull -q --platform "$PLATFORM" "$img" >/dev/null 2>&1 && return 0
+    if [ -n "$alt" ] && docker pull -q --platform "$PLATFORM" "$alt" >/dev/null 2>&1; then docker tag "$alt" "$img"; return 0; fi
     echo "   pull $img failed (attempt $attempt/5), retrying" >&2
     sleep $((attempt * 10))
   done
@@ -79,7 +82,8 @@ pull() {
 images=$(helm template argocd argo/argo-cd "${ARGO_VALUES[@]}" | sed -nE 's/^[[:space:]]*image:[[:space:]]*"?([^"[:space:]]+)"?.*/\1/p' | sort -u)
 for img in $images; do
   pull "$img" || { echo "could not pull $img" >&2; exit 1; }
-  kind load docker-image "$img" --name fleet-hub >/dev/null
+  docker save "$img" -o /tmp/preload.tar && kind load image-archive /tmp/preload.tar --name fleet-hub >/dev/null
+  rm -f /tmp/preload.tar
   echo "   preloaded $img"
 done
 
