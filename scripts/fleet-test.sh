@@ -7,6 +7,7 @@
 #   4. onboarding     labelling a registered cluster fleet/managed=true is all it takes
 #   5. release        a merge reaches dev only; promotion passes the gate; prod updates one cluster at a time
 #   6. halt           a release that can't start on dev is refused at the gate and never reaches prod
+#   7. SLO            a release that runs and is Healthy but serves errors is refused by the gate's SLO check
 set -uo pipefail
 cd "$(dirname "$0")/.."
 export KUBECONFIG=${KUBECONFIG:-/tmp/kubeconfig-fleet}
@@ -32,6 +33,11 @@ image_on() { on "$1" -n podinfo get deploy podinfo -o jsonpath='{.spec.template.
 rolled_out() {  # rolled_out <cluster> <tag>: the deployment runs <tag> on all replicas, rollout complete
   [ "$(image_on "$1")" = "ghcr.io/stefanprodan/podinfo:$2" ] && on "$1" -n podinfo rollout status deploy/podinfo --timeout=1s
 }
+set_fault() {  # turn podinfo's random errors on or off in git (a "healthy but wrong" release)
+  sed -i "s/^  error: .*/  error: $1/" fleet/apps/podinfo/values.yaml
+  REV=$(bash scripts/push-fleet.sh "podinfo faults.error=$1" | awk '/^   pushed: / { print $2 }')
+}
+has_fault() { on "$1" -n podinfo get deploy podinfo -o jsonpath='{.spec.template.spec.containers[0].command}' | grep -q random-error=true; }
 set_tag() {  # commit a new image tag (what merging a release PR does); REV = the commit
   sed -i "s/^  tag: .*/  tag: $1/" fleet/apps/podinfo/values.yaml
   REV=$(bash scripts/push-fleet.sh "podinfo $1" | awk '/^   pushed: / { print $2 }')
@@ -140,6 +146,21 @@ if t=$(wait_until 300 sh -c "kubectl --context kind-fleet-dev -n podinfo get dep
 else fail "dev never received the broken release"; fi
 set_tag 6.7.1
 if t=$(wait_until 300 rolled_out dev 6.7.1); then pass "revert in git: dev back on 6.7.1 in ${t}s"
+else fail "dev did not recover after the revert"; fi
+
+echo "== 7. SLO: a release that is Healthy but fails a third of its requests"
+set_fault true
+if t=$(wait_until 300 sh -c "kubectl --context kind-fleet-dev -n podinfo get deploy podinfo -o jsonpath='{.spec.template.spec.containers[0].command}' | grep -q random-error=true && kubectl --context kind-fleet-dev -n podinfo rollout status deploy/podinfo --timeout=1s"); then
+  echo "   ${t}s  dev runs the erroring release; Argo CD: $(hub -n argocd get application podinfo-dev -o jsonpath='{.status.sync.status}/{.status.health.status}')"
+  if out=$(TIMEOUT=180 bash scripts/promote.sh "$REV" 2>&1); then fail "the gate promoted a release that serves errors: $out"
+  elif echo "$out" | grep -q "breaks its SLO"; then pass "gate: $(echo "$out" | tail -1 | cut -c1-200)"
+  else fail "the gate refused, but not because of the SLO: $(echo "$out" | tail -1)"; fi
+  if ! has_fault prod-eu && ! has_fault prod-us; then pass "prod-eu and prod-us never got the erroring release"
+  else fail "the erroring release reached prod"; fi
+else fail "dev never ran the erroring release"; fi
+set_fault false
+if t=$(wait_until 300 sh -c "! kubectl --context kind-fleet-dev -n podinfo get deploy podinfo -o jsonpath='{.spec.template.spec.containers[0].command}' | grep -q random-error=true"); then
+  pass "revert in git: dev serving without errors again in ${t}s"
 else fail "dev did not recover after the revert"; fi
 
 echo

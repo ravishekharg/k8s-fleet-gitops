@@ -7,3 +7,11 @@ replicaCount: 2
 resources:
   requests: { cpu: 10m, memory: 32Mi }
   limits: { memory: 64Mi }
+# faults.error makes podinfo answer a third of requests with 5xx/4xx while staying up: the "healthy but
+# wrong" release the promotion gate's SLO check must stop (fleet-test.sh check 7). Probes tolerate it
+# (failureThreshold 10), so Argo CD reports the release Healthy, which is exactly the point.
+faults:
+  error: false
+probes:
+  readiness: { initialDelaySeconds: 1, timeoutSeconds: 5, failureThreshold: 10, successThreshold: 1, periodSeconds: 10 }
+  liveness: { initialDelaySeconds: 1, timeoutSeconds: 5, failureThreshold: 10, successThreshold: 1, periodSeconds: 10 }
