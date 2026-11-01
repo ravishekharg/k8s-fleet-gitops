@@ -65,8 +65,8 @@ ARGO_VALUES=(
 # timed out because the Redis image (ecr-public.aws.com/docker/library/redis) answered 429, and a
 # pod in ImagePullBackOff only retries every few minutes. Docker Hub is the fallback for images
 # that ECR Public mirrors from it.
-# One platform only, loaded as an archive: `kind load docker-image` imports with --all-platforms, which fails on
-# newer Docker (containerd image store) for multi-arch images whose other platforms were never pulled.
+# One platform only, imported without --all-platforms: `kind load` always passes that flag, which fails on newer
+# Docker (containerd image store) for multi-arch images whose other platforms were never pulled.
 PLATFORM=${PLATFORM:-linux/$(docker version -f '{{.Server.Arch}}')}
 pull() {
   local img=$1 alt=""
@@ -82,8 +82,8 @@ pull() {
 images=$(helm template argocd argo/argo-cd "${ARGO_VALUES[@]}" | sed -nE 's/^[[:space:]]*image:[[:space:]]*"?([^"[:space:]]+)"?.*/\1/p' | sort -u)
 for img in $images; do
   pull "$img" || { echo "could not pull $img" >&2; exit 1; }
-  docker save "$img" -o /tmp/preload.tar && kind load image-archive /tmp/preload.tar --name fleet-hub >/dev/null
-  rm -f /tmp/preload.tar
+  # straight into the node's containerd, without --all-platforms (which kind load always passes)
+  docker save "$img" | docker exec -i fleet-hub-control-plane ctr --namespace=k8s.io images import     --digests --snapshotter=overlayfs - >/dev/null
   echo "   preloaded $img"
 done
 
