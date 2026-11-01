@@ -35,14 +35,23 @@ It's a personal project built for interviews, not code from a former employer.
 | Charts render for dev and prod; prod renders Enforce, dev Audit | Passing (`scripts/static-checks.sh`) |
 | All manifests, including Argo CD ApplicationSets/AppProjects and Kyverno policies, validate against their schemas | 23 / 23 valid |
 | Policy unit tests (Kyverno CLI: good pod passes, each bad pod fails the right rule, system namespaces exempt) | 16 / 16 passing |
-| Live fleet test (`scripts/fleet-test.sh`): bootstrap, governance, drift self-heal, onboarding by label, promotion and one-at-a-time prod rollout, gate refusing a bad release | **13 / 13 passing** in CI's `fleet` job (four kind clusters; not run locally) |
+| Live fleet test (`scripts/fleet-test.sh`): bootstrap, governance, drift self-heal, onboarding by label, promotion and one-at-a-time prod rollout, gate refusing a release that can't start, **gate refusing a release that is Healthy but serves errors** | **All checks passing** in CI's `fleet` job (four kind clusters; not run locally) |
+
+**The promotion gate checks the SLO, not just "Healthy".** During the soak it sends requests to the release on
+dev and refuses to promote if more than 5% fail or p99 is over the limit. CI run of 2026-11-01:
+
+| Release on dev | Argo CD says | Gate measured | Gate decision |
+|---|---|---|---|
+| podinfo 6.7.1 | Synced / Healthy | 0 of 35 requests failed, p99 165 ms | promoted; prod updated one cluster at a time |
+| 6.7.1 with `faults.error` (a third of requests fail) | **Synced / Healthy** | **7 of 20 failed (35%)** | **refused**: never reached prod |
+| a tag that doesn't exist | Synced / Progressing | — | refused (not Healthy) |
 
 ## Run it
 Needs Docker, kind, kubectl, helm (and about 4 GB of free memory: four single-node clusters).
 ```bash
 bash scripts/static-checks.sh     # offline: render, schema-validate, policy unit tests
 bash scripts/up.sh                # hub + dev + prod-eu + prod-us + a Git server, Argo CD, registration
-bash scripts/fleet-test.sh        # the six live checks
+bash scripts/fleet-test.sh        # the seven live checks
 bash scripts/promote.sh           # promote main's head to prod (refuses unless dev is healthy on it)
 bash scripts/down.sh
 ```
@@ -50,4 +59,5 @@ Everything uses its own kubeconfig (`/tmp/kubeconfig-fleet`), never the machine'
 context. The Git server in the lab (`fleet-git`) stands in for GitHub/GitLab; on a real fleet
 the `repoURL`s point at the real repository.
 
-Design, trade-offs and what a production fleet adds: [`docs/design.md`](docs/design.md).
+Design, trade-offs and what a production fleet adds: [`docs/design.md`](docs/design.md); system view:
+[`docs/architecture.md`](docs/architecture.md).

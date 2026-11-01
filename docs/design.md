@@ -60,10 +60,14 @@ controller, not the Application's automated policy, triggers the syncs.
 a branch only the gate moves: nothing merged to `main` can slip into prod in the middle of a prod
 rollout.
 
-What "Healthy" can't catch: a release that starts fine but is wrong (errors, latency). The gate
-is the place for that: query the SLOs (error rate, p99 latency) over the soak window before
-moving `prod`, or run Argo Rollouts with an AnalysisTemplate inside each cluster. In a real
-setup the gate runs as a pipeline job (or Kargo) instead of a script.
+What "Healthy" can't catch: a release that starts fine but is wrong (errors, latency). So the gate
+also checks the SLO over the soak window: it sends requests to the dev service through the dev
+API server's service proxy and refuses if more than `SLO_MAX_ERROR_RATE` (5%) fail or p99 exceeds
+`SLO_P99_MS`. Check 7 of the live test ships a release that Argo CD reports Synced/Healthy but that
+fails a third of its requests, and requires the gate to refuse it. In a real setup the gate runs as a
+pipeline job (or Kargo) and reads the SLO from Prometheus instead of probing, or Argo Rollouts runs
+an AnalysisTemplate inside each cluster. The lab's p99 includes kubectl and API-proxy overhead, hence
+its generous default.
 
 ## Drift
 Platform Applications have `selfHeal: true`: Argo CD watches the live objects, and a manual
